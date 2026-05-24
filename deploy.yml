@@ -1,0 +1,114 @@
+name: CI/CD — Build, Push to ECR, Deploy to Minikube
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  AWS_REGION: ${{ secrets.AWS_REGION }}
+  ECR_REPOSITORY: nodejs-k8s-app
+  IMAGE_TAG: ${{ github.sha }}
+
+jobs:
+  build-and-deploy:
+    name: Build Docker Image and Deploy to Kubernetes
+    runs-on: ubuntu-latest
+
+    steps:
+
+    # ── Step 1: Checkout code ──────────────────────────────
+    - name: Checkout source code
+      uses: actions/checkout@v4
+
+    # ── Step 2: Set up Docker Buildx ──────────────────────
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    # ── Step 3: Configure AWS credentials ─────────────────
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ secrets.AWS_REGION }}
+
+    # ── Step 4: Login to Amazon ECR ───────────────────────
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v2
+
+    # ── Step 5: Build Docker image ────────────────────────
+    - name: Build Docker image
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+      run: |
+        echo "Building image: $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+        docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
+          $ECR_REGISTRY/$ECR_REPOSITORY:latest
+
+    # ── Step 6: Push image to ECR ─────────────────────────
+    - name: Push Docker image to ECR
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+      run: |
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+        echo "Pushed: $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+        echo "Pushed: $ECR_REGISTRY/$ECR_REPOSITORY:latest"
+
+    # ── Steps 7-9: SSH into EC2 and deploy ────────────────
+    - name: SSH into EC2 and deploy to Minikube
+      uses: appleboy/ssh-action@v1.0.3
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        ECR_REPOSITORY: ${{ env.ECR_REPOSITORY }}
+        AWS_REGION: ${{ secrets.AWS_REGION }}
+        IMAGE_TAG: ${{ env.IMAGE_TAG }}
+      with:
+        host: ${{ secrets.EC2_HOST }}
+        username: ec2-user
+        key: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
+        envs: ECR_REGISTRY,ECR_REPOSITORY,AWS_REGION,IMAGE_TAG
+        script: |
+          set -e
+
+          echo "==> Step 7: Refreshing ECR login on EC2..."
+          aws ecr get-login-password --region $AWS_REGION | \
+            docker login --username AWS --password-stdin $ECR_REGISTRY
+
+          echo "==> Step 8: Pulling new image..."
+          docker pull $ECR_REGISTRY/$ECR_REPOSITORY:latest
+
+          echo "==> Updating ECR pull secret in Kubernetes..."
+          kubectl delete secret ecr-secret --ignore-not-found
+          kubectl create secret docker-registry ecr-secret \
+            --docker-server=$ECR_REGISTRY \
+            --docker-username=AWS \
+            --docker-password=$(aws ecr get-login-password --region $AWS_REGION) \
+            --docker-email=deploy@github-actions.local
+
+          echo "==> Step 9: Updating image in deployment..."
+          kubectl set image deployment/nodejs-app \
+            nodejs-app=$ECR_REGISTRY/$ECR_REPOSITORY:latest
+
+          echo "==> Rolling restart to apply new image..."
+          kubectl rollout restart deployment/nodejs-app
+
+          echo "==> Waiting for rollout to complete..."
+          kubectl rollout status deployment/nodejs-app --timeout=120s
+
+          echo "==> Deployment complete!"
+          kubectl get pods -l app=nodejs-app
+          kubectl get services nodejs-service
+
+    # ── Notify on failure ─────────────────────────────────
+    - name: Notify on failure
+      if: failure()
+      run: |
+        echo "Pipeline FAILED at commit ${{ github.sha }}"
+        echo "Branch: ${{ github.ref_name }}"
+        echo "Triggered by: ${{ github.actor }}"
+        echo "Check logs above to debug the issue."
