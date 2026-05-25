@@ -39,4 +39,4 @@ jobs:
           key: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
           script: |
             cd ~/devops-project
-            kubectl rollout restart deployment/nodejs-app
+            kubectl rollout restart deployment/nodejs-app-deployment
