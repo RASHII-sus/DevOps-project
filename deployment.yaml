@@ -22,7 +22,6 @@ spec:
     spec:
       containers:
       - name: nodejs-app
-        # REPLACE with your actual ECR URI before applying
         image: 757709777898.dkr.ecr.us-east-1.amazonaws.com/nodejs-k8s-app:latest
         imagePullPolicy: Always
         ports:
