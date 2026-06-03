@@ -104,7 +104,7 @@ app.get('/', (req, res) => {
         <div class="value">${visitors}</div>
       </div>
     </div>
-    <span class="badge">✅ Running healthy</span>
+    <span class="badge">✅ Running healthy 100%</span>
   </div>
 </body>
 </html>
@@ -126,3 +126,4 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`[${new Date().toISOString()}] Server running on port ${PORT}`);
   console.log(`Container ID: ${os.hostname()}`);
 });
+
